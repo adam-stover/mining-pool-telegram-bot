@@ -94,55 +94,75 @@ class BotManager:
                 return []
             return resp['result']
 
+
+    async def cmd_help(self, _command):
+        return HELP_STR
+
+    async def cmd_list(self, _command):
+        return self.pool_names
+
+    async def cmd_subscribe(self, command):
+        pool_name = command['pool_name']
+        chat_id = command['chat_id']
+        if pool_name not in self.store.pool_subs:
+            return f'Failed to subscribe to {pool_name}: pool not found. Be sure that you have written the pool exactly how it appears in /list (it is case sensitive!) E.g.: /subscribe SlushPool'
+        elif chat_id in self.store.pool_subs[pool_name]:
+            return f'Failed to subscribe to {pool_name}: you are already subscribed to this pool.'
+        else:
+            self.store.pool_subs[pool_name][chat_id] = True
+            return f'Successfully subscribed to {pool_name}.'
+
+    async def cmd_unsubscribe(self, command):
+        pool_name = command['pool_name']
+        chat_id = command['chat_id']
+        if pool_name not in self.store.pool_subs:
+            return f'Failed to subscribe to {pool_name}: pool not found. Be sure that you have written the pool exactly how it appears in /list (it is case sensitive!) E.g.: /subscribe SlushPool'
+        elif chat_id not in self.store.pool_subs[pool_name]:
+            return f'Failed to unsubscribe from {pool_name}: you were not subscribed to this pool.'
+        else:
+            self.store.pool_subs[pool_name].pop(chat_id)
+            return f'Successfully unsubscribed from {pool_name}.'
+
+    async def cmd_listsubs(self, command):
+        chat_id = command['chat_id']
+        user_subs = []
+        for pool in self.store.pool_subs:
+            if chat_id in self.store.pool_subs[pool]:
+                user_subs.append(pool)
+        if len(user_subs) == 0:
+            return 'You are not subscribed to any pools.'
+        else:
+            return f'You are subscribed to: {" | ".join(user_subs)}'
+
+    async def cmd_clearsubs(self, command):
+        chat_id = command['chat_id']
+        user_subs = list()
+        for pool in self.store.pool_subs:
+            if chat_id in self.store.pool_subs[pool]:
+                user_subs.append(pool)
+                self.store.pool_subs[pool].pop(chat_id)
+        if len(user_subs) == 0:
+            return 'You were not subscribed to any pools.'
+        else:
+            return f'Successfully unsubscribed from: {" | ".join(user_subs)}'
+
     async def send_responses(self, commands):
         if len(commands) == 0:
             return
         tasks = []
         for command in commands:
-            chat_id = command['chat_id']
-            message_id = command['message_id']
-            cmd = command['cmd']
-            pool_name = command['pool_name']
-            body = {'chat_id': chat_id, 'reply_to_message_id': message_id}
-            if cmd == '/start' or cmd == '/help':
-                body['text'] = HELP_STR
-            elif cmd == '/list':
-                body['text'] = self.pool_names
-            elif cmd == '/subscribe':
-                if pool_name not in self.store.pool_subs:
-                    body['text'] = f'Failed to subscribe to {pool_name}: pool not found. Be sure that you have written the pool exactly how it appears in /list (it is case sensitive!) E.g.: /subscribe SlushPool'
-                elif chat_id in self.store.pool_subs[pool_name]:
-                    body['text'] = f'Failed to subscribe to {pool_name}: you are already subscribed to this pool.'
-                else:
-                    self.store.pool_subs[pool_name][chat_id] = True
-                    body['text'] = f'Successfully subscribed to {pool_name}.'
-            elif cmd == '/unsubscribe':
-                if pool_name not in self.store.pool_subs:
-                    body['text'] = f'Failed to subscribe to {pool_name}: pool not found. Be sure that you have written the pool exactly how it appears in /list (it is case sensitive!) E.g.: /subscribe SlushPool'
-                elif chat_id not in self.store.pool_subs[pool_name]:
-                    body['text'] = f'Failed to unsubscribe from {pool_name}: you were not subscribed to this pool.'
-                else:
-                    self.store.pool_subs[pool_name].pop(chat_id)
-                    body['text'] = f'Successfully unsubscribed from {pool_name}.'
-            elif cmd == '/listsubs':
-                user_subs = list()
-                for pool in self.store.pool_subs:
-                    if chat_id in self.store.pool_subs[pool]:
-                        user_subs.append(pool)
-                if len(user_subs) == 0:
-                    body['text'] = 'You are not subscribed to any pools.'
-                else:
-                    body['text'] = f'You are subscribed to: {" | ".join(user_subs)}'
-            elif cmd == '/clearsubs':
-                user_subs = list()
-                for pool in self.store.pool_subs:
-                    if chat_id in self.store.pool_subs[pool]:
-                        user_subs.append(pool)
-                        self.store.pool_subs[pool].pop(chat_id)
-                if len(user_subs) == 0:
-                    body['text'] = 'You were not subscribed to any pools.'
-                else:
-                    body['text'] = f'Successfully unsubscribed from: {" | ".join(user_subs)}'
+            body = {'chat_id': command['chat_id'], 'reply_to_message_id': command['message_id']}
+            allowed_commands = {
+                                '/start': self.cmd_help,
+                                '/help': self.cmd_help,
+                                '/list': self.cmd_list,
+                                '/subscribe': self.cmd_subscribe,
+                                '/unsubscribe': self.cmd_unsubscribe,
+                                '/listsubs': self.cmd_listsubs,
+                                '/clearsubs': self.cmd_clearsubs
+                                }
+            if cmd := command['cmd'] in allowed_commands:
+                body['text'] = await allowed_commands[cmd](command)
             else:
                 body['text'] = 'Unknown command.'
             tasks.append(send_message(self.session, body))
