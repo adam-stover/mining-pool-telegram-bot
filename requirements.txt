@@ -1,0 +1,3 @@
+aiohttp==3.7.4.post0
+pybtc==2.3.11
+pyzmq==22.3.0

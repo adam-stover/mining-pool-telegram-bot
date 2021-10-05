@@ -1,12 +1,12 @@
 import asyncio
 import aiohttp
+import itertools
 import zmq
 import zmq.asyncio
 import pybtc
 import json
 import logging
 from sys import stdout
-from bitcoinrpc.authproxy import AuthServiceProxy, JSONRPCException
 from settings import ZMQ_ADDRESS, RPC_ADDRESS, SUBSCRIPTION, POOLS_URL, LOG_FILE, DATA_FILE, BASE_URL, CHAT_ID, HELP_STR
 
 def setup_logging():
@@ -30,9 +30,7 @@ async def get_pools(session):
         return resp
 
 async def send_message(session, body):
-    async with session.get(BASE_URL + '/sendMessage', params=body) as resp:
-        return resp.status
-
+    await session.post(f'{BASE_URL}/sendMessage', data=body)
 
 class Store:
     def __init__(self):
@@ -74,7 +72,7 @@ class BotManager:
                 offset = update['update_id'] + 1
             if 'message' in update:
                 msg = update['message']
-                logging.info('message: %s', msg)
+                logging.info(f'message: {msg}')
                 if msg['chat']['type'] == 'private' and msg['from']['is_bot'] is False and 'entities' in msg:
                     for entity in msg['entities']:
                         if entity['type'] == 'bot_command':
@@ -89,10 +87,10 @@ class BotManager:
 
     async def get_updates(self):
         body = {'offset': self.store.offset, 'timeout': 120, 'allowed_updates': ['message']}
-        async with self.session.get(BASE_URL + '/getUpdates', params=body) as resp:
+        async with self.session.get(f'{BASE_URL}/getUpdates', params=body) as resp:
             resp = await resp.json()
             if resp['ok'] is not True:
-                logging.warning('Fail: %s', resp.text)
+                logging.warning(f'Fail: {resp["reason"]}')
                 return []
             return resp['result']
 
@@ -112,20 +110,20 @@ class BotManager:
                 body['text'] = self.pool_names
             elif cmd == '/subscribe':
                 if pool_name not in self.store.pool_subs:
-                    body['text'] = 'Failed to subscribe to %s: pool not found. Be sure that you have written the pool exactly how it appears in /list (it is case sensitive!) E.g.: /subscribe SlushPool'%(pool_name)
+                    body['text'] = f'Failed to subscribe to {pool_name}: pool not found. Be sure that you have written the pool exactly how it appears in /list (it is case sensitive!) E.g.: /subscribe SlushPool'
                 elif chat_id in self.store.pool_subs[pool_name]:
-                    body['text'] = 'Failed to subscribe to %s: you are already subscribed to this pool.'%(pool_name)
+                    body['text'] = f'Failed to subscribe to {pool_name}: you are already subscribed to this pool.'
                 else:
                     self.store.pool_subs[pool_name][chat_id] = True
-                    body['text'] = 'Successfully subscribed to %s.'%(pool_name)
+                    body['text'] = f'Successfully subscribed to {pool_name}.'
             elif cmd == '/unsubscribe':
                 if pool_name not in self.store.pool_subs:
-                    body['text'] = 'Failed to subscribe to %s: pool not found. Be sure that you have written the pool exactly how it appears in /list (it is case sensitive!) E.g.: /subscribe SlushPool'%(pool_name)
+                    body['text'] = f'Failed to subscribe to {pool_name}: pool not found. Be sure that you have written the pool exactly how it appears in /list (it is case sensitive!) E.g.: /subscribe SlushPool'
                 elif chat_id not in self.store.pool_subs[pool_name]:
-                    body['text'] = 'Failed to unsubscribe from %s: you were not subscribed to this pool.'%(pool_name)
+                    body['text'] = f'Failed to unsubscribe from {pool_name}: you were not subscribed to this pool.'
                 else:
                     self.store.pool_subs[pool_name].pop(chat_id)
-                    body['text'] = 'Successfully unsubscribed from %s.'%(pool_name)
+                    body['text'] = f'Successfully unsubscribed from {pool_name}.'
             elif cmd == '/listsubs':
                 user_subs = list()
                 for pool in self.store.pool_subs:
@@ -134,7 +132,7 @@ class BotManager:
                 if len(user_subs) == 0:
                     body['text'] = 'You are not subscribed to any pools.'
                 else:
-                    body['text'] = 'You are subscribed to: ' + ' | '.join(user_subs)
+                    body['text'] = f'You are subscribed to: {" | ".join(user_subs)}'
             elif cmd == '/clearsubs':
                 user_subs = list()
                 for pool in self.store.pool_subs:
@@ -144,10 +142,10 @@ class BotManager:
                 if len(user_subs) == 0:
                     body['text'] = 'You were not subscribed to any pools.'
                 else:
-                    body['text'] = 'Successfully unsubscribed from: ' + ' | '.join(user_subs)
+                    body['text'] = f'Successfully unsubscribed from: {" | ".join(user_subs)}'
             else:
                 body['text'] = 'Unknown command.'
-            tasks.append(asyncio.create_task(send_message(self.session, body)))
+            tasks.append(send_message(self.session, body))
         await asyncio.gather(*tasks)
 
     async def process_updates(self):
@@ -172,6 +170,7 @@ class StreamManager:
         self.pools = pools
         self.session = session
         self.store = store
+        self._next_rpc_id = itertools.count(1).__next__
 
     def get_miner_from_raw_block(self, raw_block):
         block = pybtc.Block(raw_block, format="decoded")
@@ -189,16 +188,16 @@ class StreamManager:
             if tag in coinbaseAscii:
                 return self.pools['coinbase_tags'][tag]['name']
 
-        logging.info('Pool not found: %s', coinbaseAscii)
+        logging.info(f'Pool not found: {coinbaseAscii}')
         return 'Unknown'
 
     async def send_new_block(self, miner, block_count):
-        text = 'New block #%s mined by: %s'%(block_count, miner)
-        tasks = [asyncio.create_task(send_message(self.session, {"chat_id": CHAT_ID, "text": text}))]
+        text = f'New block #{block_count} mined by: {miner}'
+        tasks = [send_message(self.session, {"chat_id": CHAT_ID, "text": text})]
         if miner in self.store.pool_subs:
-            for chat_id in self.store.pool_subs[miner].keys():
+            for chat_id in self.store.pool_subs[miner]:
                 body = {"chat_id": chat_id, "text": text}
-                tasks.append(asyncio.create_task(send_message(self.session, body)))
+                tasks.append(send_message(self.session, body))
         await asyncio.gather(*tasks)
         self.store.update_last_block_sent(block_count)
         logging.info(text)
@@ -209,16 +208,22 @@ class StreamManager:
             block_count = self.store.last_block_sent + 1
             miner = self.get_miner_from_raw_block(msg)
             await self.send_new_block(miner, block_count)
+
+    async def query_rpc(self, method, params=[]):
+        data = {'jsonrpc': '2.0', 'id': self._next_rpc_id(), 'method': method, 'params': params}
+        async with self.session.post(RPC_ADDRESS, json=data) as resp:
+            resp = await resp.json()
+            return resp['result']
     
     async def catch_up_if_necessary(self):
         last_block_sent = self.store.last_block_sent
-        rpc = AuthServiceProxy(RPC_ADDRESS)
-        actual_last_block = rpc.getblockcount()
+        actual_last_block = await self.query_rpc('getblockcount')
         if last_block_sent != actual_last_block:
-            logging.info('%s is different from %s, catching up...', last_block_sent, actual_last_block)
-            cmds = [['getblockhash', height] for height in range(last_block_sent + 1, actual_last_block + 1)]
-            block_hashes = rpc.batch_(cmds)
-            blocks = rpc.batch_([['getblock', h, 0] for h in block_hashes])
+            logging.info(f'{last_block_sent} is different from {actual_last_block}, catching up...')
+            tasks = [self.query_rpc('getblockhash', [h]) for h in range(last_block_sent + 1, actual_last_block + 1)]
+            hashes = await asyncio.gather(*tasks)
+            tasks = [self.query_rpc('getblock', [h, 0]) for h in hashes]
+            blocks = await asyncio.gather(*tasks)
             for i in range(len(blocks)):
                 miner = self.get_miner_from_raw_block(blocks[i])
                 block_count = last_block_sent + 1 + i
