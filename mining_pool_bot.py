@@ -1,4 +1,5 @@
 import asyncio
+import aiofiles
 import aiohttp
 import itertools
 import zmq
@@ -33,30 +34,26 @@ async def send_message(session, body):
     await session.post(f'{BASE_URL}/sendMessage', data=body)
 
 class Store:
-    def __init__(self):
-        self._read()
+    async def read(self):
+        async with aiofiles.open(DATA_FILE, 'r') as f:
+            data = await f.read()
+        data = json.loads(data)
+        self.last_block_sent = data['last_block_sent']
+        self.offset = data['offset']
+        self.pool_subs = data['pool_subs']
 
-    def _read(self):
-        with open(DATA_FILE, 'r') as f:
-            data = f.read()
-            data = json.loads(data)
-            self.last_block_sent = data['last_block_sent']
-            self.offset = data['offset']
-            self.pool_subs = data['pool_subs']
-
-    def _write(self):
-        with open(DATA_FILE, 'w') as f:
-            data = json.dumps({'last_block_sent': self.last_block_sent, 'offset': self.offset, 'pool_subs': self.pool_subs})
-            f.write(data)
+    async def _write(self):
+        data = json.dumps({'last_block_sent': self.last_block_sent, 'offset': self.offset, 'pool_subs': self.pool_subs})
+        async with aiofiles.open(DATA_FILE, 'w') as f:
+            await f.write(data)
 
     def update_offset(self, offset):
         self.offset = offset
-        self._write()
+        asyncio.create_task(self._write())
 
     def update_last_block_sent(self, last_block_sent):
         self.last_block_sent = last_block_sent
-        self._write()
-
+        asyncio.create_task(self._write())
 
 class BotManager:
     def __init__(self, session, store, pools):
@@ -72,17 +69,20 @@ class BotManager:
                 offset = update['update_id'] + 1
             if 'message' in update:
                 msg = update['message']
-                logging.info(f'message: {msg}')
-                if msg['chat']['type'] == 'private' and msg['from']['is_bot'] is False and 'entities' in msg:
-                    for entity in msg['entities']:
-                        if entity['type'] == 'bot_command':
-                            begin = entity['offset']
-                            end = begin + entity['length']
-                            text = msg['text']
-                            command = text[begin:end]
-                            pool_name = text[end + 1:]
-                            commands.append({'chat_id': str(msg['chat']['id']), 'message_id': msg['message_id'], 'cmd': command, 'pool_name': pool_name})
-                            break
+                if msg['chat']['type'] == 'private' and msg['from']['is_bot'] is False:
+                    logging.info(f'message: {msg}')
+                    if 'entities' in msg:
+                        for entity in msg['entities']:
+                            if entity['type'] == 'bot_command':
+                                begin = entity['offset']
+                                end = begin + entity['length']
+                                text = msg['text']
+                                command = text[begin:end]
+                                pool_name = text[end + 1:]
+                                commands.append({'chat_id': str(msg['chat']['id']), 'message_id': msg['message_id'], 'cmd': command, 'pool_name': pool_name})
+                                break
+                else:
+                    logging.debug(f'message: {msg}')
         return (commands, offset)
 
     async def get_updates(self):
@@ -172,10 +172,15 @@ class StreamManager:
         self.store = store
         self._next_rpc_id = itertools.count(1).__next__
 
-    def get_miner_from_raw_block(self, raw_block):
+    def get_coinbase_from_raw_block(self, raw_block):
         block = pybtc.Block(raw_block, format="decoded")
         coinbase = block['tx'][0]
+        return coinbase
 
+    def get_reward_from_coinbase(self, coinbase):
+        return f"₿{sum(coinbase['vOut'][i]['value'] for i in coinbase['vOut']) / 100000000}"
+
+    def get_miner_from_coinbase(self, coinbase):
         for i in coinbase['vOut']:
             vout = coinbase['vOut'][i]
             if 'address' in vout:
@@ -188,11 +193,11 @@ class StreamManager:
             if tag in coinbaseAscii:
                 return self.pools['coinbase_tags'][tag]['name']
 
-        logging.info(f'Pool not found: {coinbaseAscii}')
+        logging.warning(f'Pool not found: {coinbaseAscii}')
         return 'Unknown'
 
-    async def send_new_block(self, miner, block_count):
-        text = f'New block #{block_count} mined by: {miner}'
+    async def send_new_block(self, miner, reward, block_count):
+        text = f'New block #{block_count} mined by {miner} for {reward}'
         tasks = [send_message(self.session, {"chat_id": CHAT_ID, "text": text})]
         if miner in self.store.pool_subs:
             for chat_id in self.store.pool_subs[miner]:
@@ -206,28 +211,36 @@ class StreamManager:
         hex_msg = msg.hex()
         if len(hex_msg) > 16:
             block_count = self.store.last_block_sent + 1
-            miner = self.get_miner_from_raw_block(msg)
-            await self.send_new_block(miner, block_count)
+            coinbase = self.get_coinbase_from_raw_block(msg)
+            reward = self.get_reward_from_coinbase(coinbase)
+            miner = self.get_miner_from_coinbase(coinbase)
+            await self.send_new_block(miner, reward, block_count)
 
     async def query_rpc(self, method, params=[]):
         data = {'jsonrpc': '2.0', 'id': self._next_rpc_id(), 'method': method, 'params': params}
         async with self.session.post(RPC_ADDRESS, json=data) as resp:
-            resp = await resp.json()
-            return resp['result']
-    
+            if resp.ok:
+                resp = await resp.json()
+                return resp['result']
+            else:
+                logging.warning(f'Unable to query rpc for method {method} with params {params}: {resp.status} -- {resp.reason}')
+
     async def catch_up_if_necessary(self):
         last_block_sent = self.store.last_block_sent
         actual_last_block = await self.query_rpc('getblockcount')
         if last_block_sent != actual_last_block:
-            logging.info(f'{last_block_sent} is different from {actual_last_block}, catching up...')
+            logging.info(f'{last_block_sent} is different from {actual_last_block}, catching up: ')
             tasks = [self.query_rpc('getblockhash', [h]) for h in range(last_block_sent + 1, actual_last_block + 1)]
             hashes = await asyncio.gather(*tasks)
             tasks = [self.query_rpc('getblock', [h, 0]) for h in hashes]
             blocks = await asyncio.gather(*tasks)
             for i in range(len(blocks)):
-                miner = self.get_miner_from_raw_block(blocks[i])
-                block_count = last_block_sent + 1 + i
-                await self.send_new_block(miner, block_count)
+                if blocks[i] is not None:
+                    coinbase = self.get_coinbase_from_raw_block(blocks[i])
+                    reward = self.get_reward_from_coinbase(coinbase)
+                    miner = self.get_miner_from_coinbase(coinbase)
+                    block_count = last_block_sent + 1 + i
+                    await self.send_new_block(miner, reward, block_count)
 
     async def run(self):
         sock = self.ctx.socket(zmq.SUB)
@@ -244,6 +257,7 @@ class StreamManager:
 
 async def main():
     store = Store()
+    await store.read()
     async with aiohttp.ClientSession() as session:
         pools = await get_pools(session)
         stream_manager = StreamManager(session, store, pools)

@@ -1,4 +1,4 @@
-from secrets import TOKEN, TEST_TOKEN, RPC_USER, RPC_PASSWORD
+from secrets import TOKEN, RPC_USER, RPC_PASSWORD
 
 ZMQ_ADDRESS = 'tcp://127.0.0.1:28332'
 RPC_ADDRESS = 'http://%s:%s@127.0.0.1:8332'%(RPC_USER, RPC_PASSWORD)
