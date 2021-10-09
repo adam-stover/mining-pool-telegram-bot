@@ -10,13 +10,16 @@ DATA_FILE = 'data.json'
 BASE_URL = TELEGRAM_URL + TOKEN
 CHAT_ID = 0 # Put your chat ID here for channel broadcasts
 HELP_STR = """Welcome to the Mining Pool Bot. Usage:
+
 /list
+/invite
 /subscribe <pool>
 /unsubscribe <pool>
 /listsubs
 /clearsubs
 
 Once subscribed, the bot will DM you every time a pool you are subscribed to finds a block.
+To receive notifications for all blocks, use the /invite command and follow the invite link.
 
 Pools are case sensitive.
 
