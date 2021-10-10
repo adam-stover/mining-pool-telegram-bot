@@ -67,7 +67,7 @@ class BotManager:
                 offset = update['update_id'] + 1
             if 'message' in update:
                 msg = update['message']
-                if msg['chat']['type'] == 'private' and msg['from']['is_bot'] is False:
+                if msg['chat']['type'] == 'private' and msg['from']['is_bot'] is False and 'text' in msg:
                     logging.info(f'{msg["date"]} -- {msg["from"]} -- {msg["text"]}')
                     if 'entities' in msg:
                         for entity in msg['entities']:
@@ -93,9 +93,6 @@ class BotManager:
         async with self._session.post(f'{BASE_URL}/{route}', data=body) as resp:
             if not resp.ok:
                 logging.warning(f'Fail to hit {route} with {body} -- {resp.status} -- {resp.reason}')
-                if route == 'sendMessage' and resp.status == 403 and 'chat_id' in body:
-                    user_subs = self._clear_subs(body['chat_id'])
-                    logging.warning(f'Cleared {user_subs} from {body["chat_id"]} because forbidden')
                 return defaultValue
             if defaultValue is not None:
                 parsed = await resp.json()
@@ -143,7 +140,7 @@ class BotManager:
                 self._store.pool_subs[pool_name].pop(chat_id)
                 body['text'] = f'Successfully unsubscribed from {pool_name}.'
         elif cmd == '/listsubs':
-            user_subs = self._clear_subs(chat_id)
+            user_subs = list()
             for pool in self._store.pool_subs:
                 if chat_id in self._store.pool_subs[pool]:
                     user_subs.append(pool)
@@ -224,12 +221,12 @@ class StreamManager:
 
     async def _send_new_block(self, miner, reward, block_count):
         text = f'New block #{block_count} mined by {miner} for {reward}'
-        tasks = [asyncio.create_task(self._bot.send_message({"chat_id": CHAT_ID, "text": text}))]
+        colos = [self._bot.send_message({"chat_id": CHAT_ID, "text": text})]
         if miner in self._store.pool_subs:
             for chat_id in self._store.pool_subs[miner]:
                 body = {"chat_id": chat_id, "text": text}
-                tasks.append(asyncio.create_task(self._bot.send_message(body)))
-        await asyncio.gather(*tasks)
+                colos.append(self._bot.send_message(body))
+        await batch_colos(20, colos)
         self._store.update_last_block_sent(block_count)
         logging.info(text)
 
@@ -254,9 +251,9 @@ class StreamManager:
         if last_block_sent != actual_last_block:
             logging.info(f'{last_block_sent} is different from {actual_last_block}, catching up: ')
             tasks = [self._query_rpc(session, 'getblockhash', [h]) for h in range(last_block_sent + 1, actual_last_block + 1)]
-            hashes = await asyncio.gather(*tasks)
+            hashes = await batch_colos(10, tasks)
             tasks = [self._query_rpc(session, 'getblock', [h, 0]) for h in hashes]
-            blocks = await asyncio.gather(*tasks)
+            blocks = await batch_colos(10, tasks)
             for i in range(len(blocks)):
                 if blocks[i] is not None:
                     await self._handle_msg(blocks[i])
@@ -274,6 +271,20 @@ class StreamManager:
         while True:
             msg = await sock.recv_multipart()
             await self._handle_multipart(msg)
+
+async def batch_colos(batch_size, colos):
+    i = 0
+    j = batch_size
+
+    result = []
+
+    while i < len(colos):
+        tasks = [asyncio.create_task(colo) for colo in colos[i:j]] + [asyncio.sleep(1)]
+        result += await asyncio.gather(*tasks)
+        i += batch_size
+        j += batch_size
+
+    return result
 
 
 async def main():
