@@ -86,15 +86,17 @@ class BotManager:
         for pool in self._store.pool_subs:
             if chat_id in self._store.pool_subs[pool]:
                 user_subs.append(pool)
-                self._store.pool_subs[pool].pop(chat_id)
+                self._store.pool_subs[pool].remove(chat_id)
         return user_subs
 
     async def _post(self, route, body, defaultValue=None):
         async with self._session.post(f'{BASE_URL}/{route}', data=body) as resp:
             if not resp.ok:
                 logging.warning(f'Fail to hit {route} with {body} -- {resp.status} -- {resp.reason}')
+                if defaultValue is not None:
+                    return resp.status
                 return defaultValue
-            if defaultValue is not None:
+            elif defaultValue is not None:
                 parsed = await resp.json()
                 return parsed['result']
 
@@ -129,7 +131,7 @@ class BotManager:
             elif chat_id in self._store.pool_subs[pool_name]:
                 body['text'] = f'Failed to subscribe to {pool_name}: you are already subscribed to this pool.'
             else:
-                self._store.pool_subs[pool_name][chat_id] = True
+                self._store.pool_subs[pool_name].append(chat_id)
                 body['text'] = f'Successfully subscribed to {pool_name}.'
         elif cmd == '/unsubscribe':
             if pool_name not in self._store.pool_subs:
@@ -137,7 +139,7 @@ class BotManager:
             elif chat_id not in self._store.pool_subs[pool_name]:
                 body['text'] = f'Failed to unsubscribe from {pool_name}: you were not subscribed to this pool.'
             else:
-                self._store.pool_subs[pool_name].pop(chat_id)
+                self._store.pool_subs[pool_name].remove(chat_id)
                 body['text'] = f'Successfully unsubscribed from {pool_name}.'
         elif cmd == '/listsubs':
             user_subs = list()
@@ -169,7 +171,11 @@ class BotManager:
         return new_offset
 
     async def send_message(self, body):
-        await self._post('sendMessage', body)
+        status = await self._post('sendMessage', body)
+        if status == 403 and 'chat_id' in body:
+            chat_id = body['chat_id']
+            subs = self._clear_subs(chat_id)
+            logging.info(f'Cleared {subs} from {chat_id}')
 
     async def run(self):
         logging.info('Awaiting first new command...')
