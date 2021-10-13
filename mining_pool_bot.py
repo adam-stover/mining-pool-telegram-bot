@@ -26,8 +26,11 @@ def setup_logging():
 class Store:
     """Responsible for managing state during application run-time, and persisting this data beyond run-time."""
     def __init__(self):
+        """Initializes the Store, gets inital data values"""
+        self.pool_subs = None
         self.offset = None
         self.last_block_sent = None
+        self._read()
 
     async def _get_pools(self, session):
         """Retrieves pool information (known payout addresses and tags) from a known static source."""
@@ -80,7 +83,8 @@ class BotManager:
         self._poolnames = ' | '.join(sorted(pool_name_set))
         self._channel_invite_link = ''
 
-    def _parse_commands_from_updates(self, updates):
+    @staticmethod
+    def _parse_commands_from_updates(_self, updates):
         """Parses updates received into actionable user commands."""
         commands = []
         offset = -1
@@ -144,7 +148,7 @@ class BotManager:
         return self._channel_invite_link
 
     @staticmethod
-    async def _cmd_help(self, _command):
+    async def _cmd_help(_self, _command):
         return HELP_STR
 
     async def _cmd_list(self, _command):
@@ -199,8 +203,6 @@ class BotManager:
             return 'You were not subscribed to any pools.'
         else:
             return f'Successfully unsubscribed from: {" | ".join(user_subs)}'
-
-
 
     async def _send_response(self, command):
         """Logic to react and respond to user messages. Ugly, will refactor to use dict."""
