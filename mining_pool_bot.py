@@ -27,10 +27,10 @@ class Store:
     """Responsible for managing state during application run-time, and persisting this data beyond run-time."""
     def __init__(self):
         """Initializes the Store, gets inital data values"""
+        self.pools = None
         self.pool_subs = None
         self.offset = None
         self.last_block_sent = None
-        self._read()
 
     async def _get_pools(self, session):
         """Retrieves pool information (known payout addresses and tags) from a known static source."""
