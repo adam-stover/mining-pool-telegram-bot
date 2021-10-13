@@ -10,6 +10,7 @@ import logging
 import sys
 from settings import ZMQ_ADDRESS, RPC_ADDRESS, SUBSCRIPTION, POOLS_URL, LOG_FILE, DATA_FILE, BASE_URL, CHAT_ID, HELP_STR
 
+
 def setup_logging():
     """Handles logging."""
     stream_handler = logging.StreamHandler(sys.stdout)
@@ -21,8 +22,13 @@ def setup_logging():
     file_handler.setFormatter(formatter)
     logging.basicConfig(level=logging.INFO, handlers=[stream_handler, file_handler])
 
+
 class Store:
     """Responsible for managing state during application run-time, and persisting this data beyond run-time."""
+    def __init__(self):
+        self.offset = None
+        self.last_block_sent = None
+
     async def _get_pools(self, session):
         """Retrieves pool information (known payout addresses and tags) from a known static source."""
         async with session.get(POOLS_URL) as resp:
@@ -64,11 +70,13 @@ class BotManager:
     To follow the flow, start with __init__, then the `run` method below.
     See ttps://core.telegram.org/bots/api for more info.
     """
+
     def __init__(self, session, store):
         """Initializes the BotManager."""
         self._session = session
         self._store = store
-        pool_name_set = {p['name'] for p in list(self._store.pools['coinbase_tags'].values()) + list(self._store.pools['payout_addresses'].values())}
+        pool_name_set = {p['name'] for p in list(self._store.pools['coinbase_tags'].values()) + list(
+            self._store.pools['payout_addresses'].values())}
         self._poolnames = ' | '.join(sorted(pool_name_set))
         self._channel_invite_link = ''
 
@@ -78,7 +86,7 @@ class BotManager:
         offset = -1
         for update in updates:
             logging.debug(update)
-            if (update['update_id'] >= offset):
+            if update['update_id'] >= offset:
                 offset = update['update_id'] + 1
             # Ignore non-messages
             if 'message' in update:
@@ -94,9 +102,11 @@ class BotManager:
                                 text = msg['text']
                                 command = text[begin:end]
                                 pool_name = text[end + 1:]
-                                commands.append({'chat_id': str(msg['chat']['id']), 'message_id': msg['message_id'], 'cmd': command, 'pool_name': pool_name})
+                                commands.append(
+                                    {'chat_id': str(msg['chat']['id']), 'message_id': msg['message_id'], 'cmd': command,
+                                     'pool_name': pool_name})
                                 break
-        return (commands, offset)
+        return commands, offset
 
     def _clear_subs(self, chat_id):
         """Unsubscribes a user from all subscriptions -- returns their former subscriptions."""
@@ -109,15 +119,15 @@ class BotManager:
                 self._store.pool_subs[pool].remove(chat_id)
         return user_subs
 
-    async def _post(self, route, body, defaultValue=None):
+    async def _post(self, route, body, default_value=None):
         """Generic method for contacting Telegram Bot API."""
         async with self._session.post(f'{BASE_URL}/{route}', data=body) as resp:
             if not resp.ok:
                 logging.warning(f'Fail to hit {route} with {body} -- {resp.status} -- {resp.reason}')
-                if defaultValue is not None:
+                if default_value is not None:
                     return resp.status
-                return defaultValue
-            elif defaultValue is not None:
+                return default_value
+            elif default_value is not None:
                 parsed = await resp.json()
                 return parsed['result']
 
@@ -133,55 +143,82 @@ class BotManager:
 
         return self._channel_invite_link
 
+    @staticmethod
+    async def _cmd_help(self, _command):
+        return HELP_STR
+
+    async def _cmd_list(self, _command):
+        return self._poolnames
+
+    async def _cmd_invite(self, _command):
+        return await self._get_invite_link()
+
+    async def _cmd_subscribe(self, command):
+        pool_name = command['pool_name']
+        chat_id = command['chat_id']
+
+        if pool_name == '':
+            return f'Failed to subscribe. You must enter a pool to subscribe. E.g.: /subscribe SlushPool'
+        elif pool_name not in self._store.pool_subs:
+            return f'Failed to subscribe to {pool_name}: pool not found. Be sure that you have written the pool exactly how it appears in /list (it is case sensitive!) E.g.: /subscribe SlushPool'
+        elif chat_id in self._store.pool_subs[pool_name]:
+            return f'Failed to subscribe to {pool_name}: you are already subscribed to this pool.'
+        else:
+            self._store.pool_subs[pool_name].append(chat_id)
+            return f'Successfully subscribed to {pool_name}.'
+
+    async def _cmd_unsubscribe(self, command):
+        pool_name = command['pool_name']
+        chat_id = command['chat_id']
+
+        if pool_name not in self._store.pool_subs:
+            return f'Failed to subscribe to {pool_name}: pool not found. Be sure that you have written the pool exactly how it appears in /list (it is case sensitive!) E.g.: /subscribe SlushPool'
+        elif chat_id not in self._store.pool_subs[pool_name]:
+            return f'Failed to unsubscribe from {pool_name}: you were not subscribed to this pool.'
+        else:
+            self._store.pool_subs[pool_name].remove(chat_id)
+            return f'Successfully unsubscribed from {pool_name}.'
+
+    async def _cmd_listsubs(self, command):
+        chat_id = command['chat_id']
+
+        user_subs = []
+        for pool in self._store.pool_subs:
+            if chat_id in self._store.pool_subs[pool]:
+                user_subs.append(pool)
+        if len(user_subs) == 0:
+            return 'You are not subscribed to any pools.'
+        else:
+            return f'You are subscribed to: {" | ".join(user_subs)}'
+
+    def _cmd_clearsubs(self, command):
+        chat_id = command['chat_id']
+
+        user_subs = self._clear_subs(chat_id)
+        if len(user_subs) == 0:
+            return 'You were not subscribed to any pools.'
+        else:
+            return f'Successfully unsubscribed from: {" | ".join(user_subs)}'
+
+
+
     async def _send_response(self, command):
         """Logic to react and respond to user messages. Ugly, will refactor to use dict."""
-        chat_id = command['chat_id']
-        message_id = command['message_id']
         cmd = command['cmd']
-        pool_name = command['pool_name']
-        body = {'chat_id': chat_id, 'reply_to_message_id': message_id}
-
-        if cmd == '/start' or cmd == '/help':
-            body['text'] = HELP_STR
-        elif cmd == '/list':
-            body['text'] = self._poolnames
-        elif cmd == '/invite':
-            body['text'] = await self._get_invite_link()
-        elif cmd == '/subscribe':
-            if pool_name == '':
-                body['text'] = f'Failed to subscribe. You must enter a pool to subscribe. E.g.: /subscribe SlushPool'
-            elif pool_name not in self._store.pool_subs:
-                body['text'] = f'Failed to subscribe to {pool_name}: pool not found. Be sure that you have written the pool exactly how it appears in /list (it is case sensitive!) E.g.: /subscribe SlushPool'
-            elif chat_id in self._store.pool_subs[pool_name]:
-                body['text'] = f'Failed to subscribe to {pool_name}: you are already subscribed to this pool.'
-            else:
-                self._store.pool_subs[pool_name].append(chat_id)
-                body['text'] = f'Successfully subscribed to {pool_name}.'
-        elif cmd == '/unsubscribe':
-            if pool_name not in self._store.pool_subs:
-                body['text'] = f'Failed to subscribe to {pool_name}: pool not found. Be sure that you have written the pool exactly how it appears in /list (it is case sensitive!) E.g.: /subscribe SlushPool'
-            elif chat_id not in self._store.pool_subs[pool_name]:
-                body['text'] = f'Failed to unsubscribe from {pool_name}: you were not subscribed to this pool.'
-            else:
-                self._store.pool_subs[pool_name].remove(chat_id)
-                body['text'] = f'Successfully unsubscribed from {pool_name}.'
-        elif cmd == '/listsubs':
-            user_subs = list()
-            for pool in self._store.pool_subs:
-                if chat_id in self._store.pool_subs[pool]:
-                    user_subs.append(pool)
-            if len(user_subs) == 0:
-                body['text'] = 'You are not subscribed to any pools.'
-            else:
-                body['text'] = f'You are subscribed to: {" | ".join(user_subs)}'
-        elif cmd == '/clearsubs':
-            user_subs = self._clear_subs(chat_id)
-            if len(user_subs) == 0:
-                body['text'] = 'You were not subscribed to any pools.'
-            else:
-                body['text'] = f'Successfully unsubscribed from: {" | ".join(user_subs)}'
+        allowed_commands = {
+            '/start': self._cmd_help,
+            '/help': self._cmd_help,
+            '/list': self._cmd_list,
+            '/invite': self._cmd_invite,
+            '/subscribe': self._cmd_subscribe,
+            '/unsubscribe': self._cmd_unsubscribe,
+            '/listsubs': self._cmd_listsubs,
+            '/clearsubs': self._cmd_clearsubs,
+        }
+        if cmd in allowed_commands:
+            body = {'chat_id': command['chat_id'], 'reply_to_message_id': command['message_id'], 'text': await allowed_commands[cmd](command)}
         else:
-            body['text'] = 'Unknown command.'
+            body = {'chat_id': command['chat_id'], 'reply_to_message_id': command['message_id'], 'text': 'Unknown command.'}
 
         await self._post('sendMessage', body)
 
@@ -219,6 +256,7 @@ class StreamManager:
     To follow the flow, start with __init__ then move to `run` below.
     See https://github.com/bitcoin/bitcoin/blob/master/doc/zmq.md for more info.
     """
+
     def __init__(self, store, bot):
         """Initializes ZMQ context, store, bot, RPC iterator."""
         self._ctx = zmq.asyncio.Context()
@@ -294,7 +332,8 @@ class StreamManager:
                 resp = await resp.json()
                 return resp['result']
             else:
-                logging.warning(f'Unable to query rpc for method {method} with params {params}: {resp.status} -- {resp.reason}')
+                logging.warning(
+                    f'Unable to query rpc for method {method} with params {params}: {resp.status} -- {resp.reason}')
 
     async def catch_up_if_necessary(self, session):
         """If there was downtime, we want to send any notifications we missed. This checks if we missed any blocks, and processes them if necessary."""
@@ -302,7 +341,8 @@ class StreamManager:
         actual_last_block = await self._query_rpc(session, 'getblockcount')
         if last_block_sent != actual_last_block:
             logging.info(f'{last_block_sent} is different from {actual_last_block}, catching up: ')
-            tasks = [self._query_rpc(session, 'getblockhash', [h]) for h in range(last_block_sent + 1, actual_last_block + 1)]
+            tasks = [self._query_rpc(session, 'getblockhash', [h]) for h in
+                     range(last_block_sent + 1, actual_last_block + 1)]
             # Batch in groups of 10 to avoid rate limiting errors.
             hashes = await batch_colos(10, tasks)
             tasks = [self._query_rpc(session, 'getblock', [h, 0]) for h in hashes]
@@ -326,6 +366,7 @@ class StreamManager:
         while True:
             msg = await sock.recv_multipart()
             await self._handle_multipart(msg)
+
 
 async def batch_colos(batch_size, colos):
     """Helper to batch out-going requests to avoid rate-limiting errors from RPC node / Telegram API."""
@@ -351,6 +392,7 @@ async def main():
         bot_manager = BotManager(session, store)
         stream_manager = StreamManager(store, bot_manager)
         await asyncio.gather(stream_manager.catch_up_if_necessary(session), stream_manager.run(), bot_manager.run())
+
 
 if __name__ == '__main__':
     setup_logging()
