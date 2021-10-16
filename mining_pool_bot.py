@@ -128,7 +128,7 @@ class BotManager:
         async with self._session.post(f'{BASE_URL}/{route}', data=body) as resp:
             if not resp.ok:
                 logging.warning(f'Fail to hit {route} with {body} -- {resp.status} -- {resp.reason}')
-                if default_value is not None:
+                if default_value is None:
                     return resp.status
                 return default_value
             elif default_value is not None:
