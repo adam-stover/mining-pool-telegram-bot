@@ -162,7 +162,7 @@ class BotManager:
 
     async def _cmd_subscribe(self, command):
         """Subscribes the user to a pools block notifications"""
-        pool_name = command['pool_name']
+        pool_name = command['pool_name'].lower()
         chat_id = command['chat_id']
 
         if pool_name == '':
@@ -178,7 +178,7 @@ class BotManager:
 
     async def _cmd_unsubscribe(self, command):
         """Unsubscribes the user from a pools block notifications"""
-        pool_name = command['pool_name']
+        pool_name = command['pool_name'].lower()
         chat_id = command['chat_id']
 
         if pool_name not in self._store.pool_subs:
@@ -279,6 +279,12 @@ class StreamManager:
         self._bot = bot
         self._next_rpc_id = itertools.count(1).__next__
 
+    def _get_hash_from_block(self, block):
+        """Gets hash from block"""
+        if block['format'] == 'decoded':
+            return block['hash']
+        return bytes.hex(block['hash'][::-1])
+
     def _get_miner_from_coinbase(self, coinbase):
         """
         Retrieves miner from coinbase based on known payout addresses and tags.
@@ -311,21 +317,25 @@ class StreamManager:
         logging.debug(f'Pool not found: {coinbase_ascii}')
         return 'Unknown'
 
-    def _get_miner_and_reward_from_msg(self, msg):
-        """Parses miner and miner reward from msg (either bytes from ZMQ or post-processed from RPC)."""
-        coinbase = pybtc.Block(msg, format='raw')['tx'][0]
+    def _get_info_from_msg(self, msg):
+        """Parses hash, miner and miner reward from msg (either bytes from ZMQ or post-processed from RPC)."""
+        block = pybtc.Block(msg, format='raw')
+        block_hash = self._get_hash_from_block(block)
+        coinbase = block['tx'][0]
         miner = self._get_miner_from_coinbase(coinbase)
         reward = f"₿{format(sum(coinbase['vOut'][i]['value'] for i in coinbase['vOut']) / 100000000, '.8f')}"
-        return miner, reward
+        return block_hash, miner, reward
 
-    async def _send_new_block(self, miner, reward, block_count):
+    async def _send_new_block(self, block_hash, miner, reward, block_count):
         """Sends block notification to broadcast channel and all subscribed users."""
-        text = f'New block #{block_count} mined by {miner} for {reward}'
-        colos = [self._bot.send_message({"chat_id": CHAT_ID, "text": text})]
-        if miner in self._store.pool_subs:
-            logging.info(f'Sending update to {len(self._store.pool_subs[miner])} subscribers')
-            for chat_id in self._store.pool_subs[miner]:
-                body = {"chat_id": chat_id, "text": text}
+        miner_text = miner.replace('.', '\\.') + ' for ' + reward.replace('.', '\\.')
+        text = f'New block [\\#{block_count}](https://mempool.space/block/{block_hash}) mined by {miner_text}'
+        colos = [self._bot.send_message({"chat_id": CHAT_ID, "text": text, "parse_mode": "MarkdownV2", "disable_web_page_preview": True})]
+        miner_key = miner.lower()
+        if miner_key in self._store.pool_subs:
+            logging.info(f'Sending update to {len(self._store.pool_subs[miner_key])} subscribers')
+            for chat_id in self._store.pool_subs[miner_key]:
+                body = {"chat_id": chat_id, "text": text, "parse_mode": "MarkdownV2", "disable_web_page_preview": True}
                 colos.append(self._bot.send_message(body))
         # Batch to avoid Telegram rate limiting. Docs say 30/1s but setting to 20 to be safe.
         await batch_colos(20, colos)
@@ -339,8 +349,8 @@ class StreamManager:
         so 64 is a sufficient threshold. """
         if len(msg) > 64:
             block_count = self._store.last_block_sent + 1
-            miner, reward = self._get_miner_and_reward_from_msg(msg)
-            await self._send_new_block(miner, reward, block_count)
+            block_hash, miner, reward = self._get_info_from_msg(msg)
+            await self._send_new_block(block_hash, miner, reward, block_count)
 
     async def _query_rpc(self, session, method, params=[]):
         """General method for querying RPC server. This is only for catching up from downtime."""
