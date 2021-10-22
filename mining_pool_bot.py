@@ -71,7 +71,7 @@ class BotManager:
     """
     Responsible for Telegram integration -- receiving and sending messages.
     To follow the flow, start with __init__, then the `run` method below.
-    See ttps://core.telegram.org/bots/api for more info.
+    See https://core.telegram.org/bots/api for more info.
     """
 
     def __init__(self, session, store):
@@ -169,7 +169,7 @@ class BotManager:
             return f'Failed to subscribe. You must enter a pool to subscribe. E.g.: /subscribe SlushPool'
         elif pool_name not in self._store.pool_subs:
             return f'Failed to subscribe to {pool_name}: pool not found. Be sure that you have written the pool ' \
-                   f'exactly how it appears in /list (it is case sensitive!) E.g.: /subscribe SlushPool '
+                   f'exactly how it appears in /list E.g.: /subscribe SlushPool '
         elif chat_id in self._store.pool_subs[pool_name]:
             return f'Failed to subscribe to {pool_name}: you are already subscribed to this pool.'
         else:
@@ -183,7 +183,7 @@ class BotManager:
 
         if pool_name not in self._store.pool_subs:
             return f'Failed to subscribe to {pool_name}: pool not found. Be sure that you have written the pool ' \
-                   f'exactly how it appears in /list (it is case sensitive!) E.g.: /subscribe SlushPool '
+                   f'exactly how it appears in /list E.g.: /subscribe SlushPool '
         elif chat_id not in self._store.pool_subs[pool_name]:
             return f'Failed to unsubscribe from {pool_name}: you were not subscribed to this pool.'
         else:
@@ -232,6 +232,8 @@ class BotManager:
             body = {'chat_id': command['chat_id'], 'reply_to_message_id': command['message_id'], 'text': 'Unknown '
                                                                                                          'command.'}
 
+        if cmd == '/invite' or cmd == '/subscribe' or cmd == '/unsubscribe' or cmd == '/listsubs' or cmd == 'clearsubs':
+            logging.info(body['text'])
         await self._post('sendMessage', body)
 
     async def _process_updates(self):
@@ -306,7 +308,7 @@ class StreamManager:
                 logging.debug(f'Found miner from tag {tag}')
                 return self._store.pools['coinbase_tags'][tag]['name']
 
-        logging.warning(f'Pool not found: {coinbase_ascii}')
+        logging.debug(f'Pool not found: {coinbase_ascii}')
         return 'Unknown'
 
     def _get_miner_and_reward_from_msg(self, msg):
@@ -321,6 +323,7 @@ class StreamManager:
         text = f'New block #{block_count} mined by {miner} for {reward}'
         colos = [self._bot.send_message({"chat_id": CHAT_ID, "text": text})]
         if miner in self._store.pool_subs:
+            logging.info(f'Sending update to {len(self._store.pool_subs[miner])} subscribers')
             for chat_id in self._store.pool_subs[miner]:
                 body = {"chat_id": chat_id, "text": text}
                 colos.append(self._bot.send_message(body))
