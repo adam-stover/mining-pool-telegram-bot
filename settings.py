@@ -21,7 +21,5 @@ HELP_STR = """Welcome to the Mining Pool Bot. Usage:
 Once subscribed, the bot will DM you every time a pool you are subscribed to finds a block.
 To receive notifications for all blocks, use the /invite command and follow the invite link.
 
-Pools are case sensitive.
-
 Examples:
 /subscribe SlushPool"""
