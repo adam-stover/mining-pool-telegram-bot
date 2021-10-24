@@ -182,7 +182,7 @@ class BotManager:
         chat_id = command['chat_id']
 
         if pool_name not in self._store.pool_subs:
-            return f'Failed to subscribe to {pool_name}: pool not found. Be sure that you have written the pool ' \
+            return f'Failed to unsubscribe from {pool_name}: pool not found. Be sure that you have written the pool ' \
                    f'exactly how it appears in /list E.g.: /subscribe SlushPool '
         elif chat_id not in self._store.pool_subs[pool_name]:
             return f'Failed to unsubscribe from {pool_name}: you were not subscribed to this pool.'
@@ -333,16 +333,18 @@ class StreamManager:
         colos = [self._bot.send_message({"chat_id": CHAT_ID, "text": text, "parse_mode": "MarkdownV2", "disable_web_page_preview": True})]
         miner_key = miner.lower()
         if miner_key in self._store.pool_subs:
-            logging.info(f'Sending update to {len(self._store.pool_subs[miner_key])} subscribers')
+            num_subs = len(self._store.pool_subs[miner_key])
             for chat_id in self._store.pool_subs[miner_key]:
                 body = {"chat_id": chat_id, "text": text, "parse_mode": "MarkdownV2", "disable_web_page_preview": True}
                 colos.append(self._bot.send_message(body))
+        else:
+            num_subs = 0
+        logging.info(f'Sending block #{block_count} by {miner} for {reward} to {num_subs} subs')
         # Batch to avoid Telegram rate limiting. Docs say 30/1s but setting to 20 to be safe.
         await batch_colos(20, colos)
         # Ensures last block sent gets persisted. Unused while running, but crucial for recovering from downtime
         # automatically.
         self._store.update_last_block_sent(block_count)
-        logging.info(text)
 
     async def _handle_msg(self, msg):
         """Handles new blocks -- ignores the metadata messages that ZMQ also sends. Empty block is around 300 bytes
