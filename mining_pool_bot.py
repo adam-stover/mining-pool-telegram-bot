@@ -232,7 +232,7 @@ class BotManager:
             body = {'chat_id': command['chat_id'], 'reply_to_message_id': command['message_id'], 'text': 'Unknown '
                                                                                                          'command.'}
 
-        if cmd == '/invite' or cmd == '/subscribe' or cmd == '/unsubscribe' or cmd == '/listsubs' or cmd == 'clearsubs':
+        if cmd == '/invite' or cmd == '/subscribe' or cmd == '/unsubscribe' or cmd == '/listsubs' or cmd == '/clearsubs':
             logging.info(body['text'])
         await self._post('sendMessage', body)
 
@@ -370,7 +370,7 @@ class StreamManager:
         and processes them if necessary. """
         last_block_sent = self._store.last_block_sent
         actual_last_block = await self._query_rpc(session, 'getblockcount')
-        if last_block_sent != actual_last_block:
+        if last_block_sent < actual_last_block:
             logging.info(f'{last_block_sent} is different from {actual_last_block}, catching up: ')
             tasks = [self._query_rpc(session, 'getblockhash', [h]) for h in
                      range(last_block_sent + 1, actual_last_block + 1)]
@@ -422,7 +422,8 @@ async def main():
         await store.load(session)
         bot_manager = BotManager(session, store)
         stream_manager = StreamManager(store, bot_manager)
-        await asyncio.gather(stream_manager.catch_up_if_necessary(session), stream_manager.run(), bot_manager.run())
+        await asyncio.create_task(stream_manager.catch_up_if_necessary(session))
+        await asyncio.gather(stream_manager.run(), bot_manager.run())
 
 
 if __name__ == '__main__':
